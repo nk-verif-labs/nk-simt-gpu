@@ -21,11 +21,17 @@ jobs:
       - name: Run Icarus Verilog simulation
         run: make -C tb SIM=icarus
 
-      - name: Run Verilator simulation
-        run: make -C tb SIM=verilator
+      - name: Run Verilator simulation with RTL coverage
+        run: |
+          make -C tb clean
+          make -C tb SIM=verilator VERILATOR_COVERAGE=1
+          verilator_coverage --annotate coverage_report tb/coverage.dat
+          verilator_coverage --rank tb/coverage.dat
 
-      - name: Upload rendered shader frame
+      - name: Upload rendered shader frame and coverage report
         uses: actions/upload-artifact@v4
         with:
-          name: nk_gpu_render
-          path: tb/nk_gpu_render.png
+          name: sim-artifacts
+          path: |
+            tb/nk_gpu_render.png
+            coverage_report/
