@@ -444,7 +444,7 @@ def _gen_instr(rng: random.Random, shamt: dict) -> int:
         shamt[op] += 1
         imm = amt | (rng.getrandbits(12) << 4 if rng.random() < 0.5 else 0)
     if op == "UNDEF":
-        return raw_word(rng.choice([0xD, 0xE]), rng.getrandbits(3), rng.getrandbits(3),
+        return raw_word(rng.choice([0xD, 0xE]), rng.randint(4, 7), rng.getrandbits(3),
                         rng.getrandbits(3), rng.getrandbits(16))
     return encode(op, rd=rd, rs1=rs1, rs2=rs2, imm16=imm)
 
