@@ -1,0 +1,31 @@
+name: Cocotb Dual-Sim CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  sim:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install simulators and Python deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog verilator python3-pip
+          python3 -m pip install --break-system-packages cocotb==1.9.2 pytest pillow
+
+      - name: Run Icarus Verilog simulation
+        run: make -C tb SIM=icarus
+
+      - name: Run Verilator simulation
+        run: make -C tb SIM=verilator
+
+      - name: Upload rendered shader frame
+        uses: actions/upload-artifact@v4
+        with:
+          name: nk_gpu_render
+          path: tb/nk_gpu_render.png
