@@ -32,11 +32,15 @@ class NkGpuGoldenModel:
         self.dmem = [0] * 128
         self.gpr = [[0] * 8 for _ in range(4)]  # R3..R7 used per lane
         self.pixels: list[tuple[int, int, int]] = []
+        self.active_mask = 0xF
+        self.mask_stack = []
         self.cov = CoverageTracker()
 
     def reset(self):
         self.gpr = [[0] * 8 for _ in range(4)]
         self.pixels.clear()
+        self.active_mask = 0xF
+        self.mask_stack.clear()
 
     def read_reg(self, lane: int, idx: int, warp_id: int) -> int:
         if idx == 0:
@@ -48,6 +52,8 @@ class NkGpuGoldenModel:
         return self.gpr[lane][idx] & 0xFFFF
 
     def run_warp(self, warp_id: int, max_steps: int = 128):
+        self.active_mask = 0xF
+        self.mask_stack.clear()
         pc = 0
         for _ in range(max_steps):
             instr = self.imem[pc & 0x1F]
@@ -65,26 +71,61 @@ class NkGpuGoldenModel:
             if opcode == 0xF:  # HALT
                 return
 
+            if opcode == 0xD:  # BR (JMP/BEQ/BNE/BLT)
+                taken = False
+                if rd == 0:
+                    taken = True
+                else:
+                    for lane in range(4):
+                        if (self.active_mask >> lane) & 1:
+                            va = self.read_reg(lane, rs1, warp_id)
+                            vb = self.read_reg(lane, rs2, warp_id)
+                            if (rd == 1 and va == vb) or (rd == 2 and va != vb) or (rd == 3 and va < vb):
+                                taken = True
+                pc = (imm16 & 0x1F) if taken else ((pc + 1) & 0x3F)
+                continue
+
+            if opcode == 0xE:  # SIMT (IF_EQ/IF_LT/ELSE/ENDIF)
+                if rd in (0, 1):
+                    self.mask_stack.append(self.active_mask)
+                    new_m = 0
+                    for lane in range(4):
+                        if (self.active_mask >> lane) & 1:
+                            va = self.read_reg(lane, rs1, warp_id)
+                            vb = self.read_reg(lane, rs2, warp_id)
+                            cond = (va == vb) if rd == 0 else (va < vb)
+                            if cond:
+                                new_m |= (1 << lane)
+                    self.active_mask = new_m
+                elif rd == 2:
+                    self.active_mask = self.mask_stack[-1] & (~self.active_mask & 0xF)
+                elif rd == 3:
+                    self.active_mask = self.mask_stack.pop()
+                pc = (pc + 1) & 0x3F
+                continue
+
             if opcode == 0xC:  # SETPX
                 y = imm16 & 0xFF
                 for lane in range(4):
-                    x = self.read_reg(lane, rs1, warp_id) & 0xFF
-                    rgb565 = self.read_reg(lane, rs2, warp_id)
-                    self.pixels.append((x, y, expand_rgb565_to_888(rgb565)))
+                    if (self.active_mask >> lane) & 1:
+                        x = self.read_reg(lane, rs1, warp_id) & 0xFF
+                        rgb565 = self.read_reg(lane, rs2, warp_id)
+                        self.pixels.append((x, y, expand_rgb565_to_888(rgb565)))
                 pc = (pc + 1) & 0x3F
                 continue
 
             if opcode == 0xB:  # ST
                 addrs = []
                 for lane in range(4):
-                    va = self.read_reg(lane, rs1, warp_id)
-                    vb = self.read_reg(lane, rs2, warp_id)
-                    raw_sum = (va & 0x7F) + (imm16 & 0x7F)
-                    if raw_sum >= 128:
-                        self.cov.corners.add("dmem_addr_wrap")
-                    addr = raw_sum & 0x7F
-                    addrs.append(addr)
-                    self.dmem[addr] = vb & 0xFFFF
+                    if (self.active_mask >> lane) & 1:
+                        va = self.read_reg(lane, rs1, warp_id)
+                        vb = self.read_reg(lane, rs2, warp_id)
+                        raw_sum = (va & 0x7F) + (imm16 & 0x7F)
+                        if raw_sum >= 128:
+                            self.cov.corners.add("dmem_addr_wrap")
+                        addr = raw_sum & 0x7F
+                        addrs.append(addr)
+                        self.dmem[addr] = vb & 0xFFFF
                 if len(set(addrs)) < 4:
                     self.cov.corners.add("dmem_lane_collision")
                 pc = (pc + 1) & 0x3F
@@ -144,7 +185,7 @@ class NkGpuGoldenModel:
                 next_vals.append((we, res))
 
             for lane, (we, res) in enumerate(next_vals):
-                if we:
+                if we and ((self.active_mask >> lane) & 1):
                     if rd < 3:
                         self.cov.corners.add("ro_reg_write_attempt")
                     else:

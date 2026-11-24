@@ -307,3 +307,88 @@ async def test_mmio_guard_while_busy(dut):
         if (await mmio_read(dut, 0, 0)) & 0x2:
             break
     assert (await mmio_read(dut, 2, 10)) == 0x1234
+
+
+@cocotb.test()
+async def test_simt_divergence_if_else_nested(dut):
+    """Test nested per-lane SIMT divergence (IF_LT / IF_EQ / ELSE / ENDIF) and masked SETPX."""
+    cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
+    await reset_dut(dut)
+
+    gm = NkGpuGoldenModel()
+    rtl_pixels = []
+
+    async def px_capture():
+        while True:
+            await RisingEdge(dut.clk)
+            if dut.px_valid.value:
+                rtl_pixels.append((int(dut.px_x.value), int(dut.px_y.value), int(dut.px_rgb.value)))
+
+    cocotb.start_soon(px_capture())
+
+    prog = [
+        encode("MOVI",  rd="R3", imm16=2),             # threshold = 2
+        encode("MOVI",  rd="R4", imm16=0),             # default result = 0
+        encode("MOVI",  rd="R5", imm16=1),             # constant 1
+        encode("IF_LT", rs1="TID", rs2="R3"),          # lanes 0,1 active
+        encode("IF_EQ", rs1="TID", rs2="ZERO"),        # lane 0 only
+        encode("MOVI",  rd="R4", imm16=100),
+        encode("ELSE"),                                # lane 1 only
+        encode("MOVI",  rd="R4", imm16=200),
+        encode("ENDIF"),                               # lanes 0,1 active
+        encode("SETPX", rs1="TID", rs2="R4", imm16=9), # emit only for lanes 0,1
+        encode("ELSE"),                                # lanes 2,3 active
+        encode("MOVI",  rd="R4", imm16=300),
+        encode("ENDIF"),                               # all 4 lanes reconverged
+        encode("ST",    rs1="TID", rs2="R4", imm16=0), # DMEM[0..3] = [100, 200, 300, 300]
+        encode("HALT"),
+    ]
+    for pc, ins in enumerate(prog):
+        gm.imem[pc] = ins
+        await mmio_write(dut, 1, pc, ins)
+
+    gm.run_warp(0)
+    await launch_warp(dut, 0)
+
+    for i in range(4):
+        got = await mmio_read(dut, 2, i)
+        assert got == gm.dmem[i], f"DMEM[{i}] mismatch: got {got}, exp {gm.dmem[i]}"
+    assert [got for got in [await mmio_read(dut, 2, i) for i in range(4)]] == [100, 200, 300, 300]
+    assert rtl_pixels == gm.pixels and len(rtl_pixels) == 2
+
+
+@cocotb.test()
+async def test_simt_hardware_loop_blt(dut):
+    """Test in-kernel hardware loop using ADDI + BLT: DMEM[tid] = sum(1 .. tid+1)."""
+    cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
+    await reset_dut(dut)
+
+    gm = NkGpuGoldenModel()
+    prog = [
+        encode("ADDI", rd="R3", rs1="TID",  imm16=1), # R3 = limit (1, 2, 3, 4)
+        encode("MOVI", rd="R4", imm16=1),             # R4 = i = 1
+        encode("MOVI", rd="R5", imm16=0),             # R5 = sum = 0
+        # PC=3: loop body
+        encode("IF_LT", rs1="R4", rs2="R3"),          # active if i < limit
+        encode("ADD",  rd="R5", rs1="R5", rs2="R4"),
+        encode("ENDIF"),
+        encode("IF_EQ", rs1="R4", rs2="R3"),          # active if i == limit
+        encode("ADD",  rd="R5", rs1="R5", rs2="R4"),
+        encode("ENDIF"),
+        encode("ADDI", rd="R4", rs1="R4", imm16=1),   # i++
+        encode("BLT",  rs1="R4", rs2="R3", imm16=3),  # if any active lane i < limit -> PC=3
+        encode("BEQ",  rs1="R4", rs2="R3", imm16=3),  # if any active lane i == limit -> PC=3
+        encode("ST",   rs1="TID", rs2="R5", imm16=10),
+        encode("HALT"),
+    ]
+    for pc, ins in enumerate(prog):
+        gm.imem[pc] = ins
+        await mmio_write(dut, 1, pc, ins)
+
+    gm.run_warp(0)
+    await launch_warp(dut, 0)
+
+    expected = [1, 3, 6, 10]
+    for i in range(4):
+        got = await mmio_read(dut, 2, 10 + i)
+        assert got == gm.dmem[10 + i] == expected[i], f"Lane {i}: got {got}, exp {expected[i]}"

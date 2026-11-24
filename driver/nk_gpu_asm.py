@@ -1,4 +1,4 @@
-"""From-scratch Python Assembler for NK-GPU v1 (32-bit SIMT ISA)."""
+"""From-scratch Python Assembler for NK-GPU v1.2 (32-bit SIMT ISA with branching & predication)."""
 
 OPCODES = {
     "NOP":   0x0,
@@ -14,17 +14,29 @@ OPCODES = {
     "LD":    0xA,
     "ST":    0xB,
     "SETPX": 0xC,
+    "BR":    0xD,
+    "SIMT":  0xE,
     "HALT":  0xF,
 }
 
-# Register aliases: R0=zero, R1=tid, R2=wid, R3..R7=GPR
+BRANCH_SUBOPS = {"JMP": 0, "BEQ": 1, "BNE": 2, "BLT": 3}
+SIMT_SUBOPS   = {"IF_EQ": 0, "IF_LT": 1, "ELSE": 2, "ENDIF": 3}
+
 REGS = {f"R{i}": i for i in range(8)}
 REGS.update({"ZERO": 0, "TID": 1, "WID": 2})
 
 
 def encode(op: str, rd: str = "R0", rs1: str = "R0", rs2: str = "R0", imm16: int = 0) -> int:
-    op_code = OPCODES[op.upper()]
-    rd_i = REGS[rd.upper()]
+    op_u = op.upper()
+    if op_u in BRANCH_SUBOPS:
+        op_code = OPCODES["BR"]
+        rd_i = BRANCH_SUBOPS[op_u]
+    elif op_u in SIMT_SUBOPS:
+        op_code = OPCODES["SIMT"]
+        rd_i = SIMT_SUBOPS[op_u]
+    else:
+        op_code = OPCODES[op_u]
+        rd_i = REGS[rd.upper()]
     rs1_i = REGS[rs1.upper()]
     rs2_i = REGS[rs2.upper()]
     return (op_code << 28) | (rd_i << 24) | (rs1_i << 20) | (rs2_i << 16) | (imm16 & 0xFFFF)
