@@ -6,7 +6,9 @@ VERILOG_SOURCES += $(CURDIR)/../rtl/nk_gpu_lane.v
 VERILOG_SOURCES += $(CURDIR)/../rtl/nk_gpu_top.v
 
 TOPLEVEL = nk_gpu_top
-MODULE = test_nk_gpu
+MODULE ?= test_nk_gpu,test_nk_gpu_verif
+
+export PYTHONPATH := $(CURDIR):$(CURDIR)/../driver:$(PYTHONPATH)
 
 ifeq ($(SIM),icarus)
 COMPILE_ARGS += -I$(CURDIR)/../rtl
