@@ -1,4 +1,4 @@
-# nk-gpu-from-scratch (`nk_gpu_top`)
+# nk-simt-gpu (`nk_gpu_top`)
 
 A custom **4-lane SIMT virtual GPU** written from scratch in Verilog-2001, verified with **Cocotb 1.9.2** dual-simulator regression (Icarus Verilog 12.0 & Verilator 5.020), and hardened to **ASAP7 7 nm FinFET GDSII** using OpenROAD-flow-scripts.
 
