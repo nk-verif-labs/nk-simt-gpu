@@ -18,7 +18,7 @@ jobs:
           sudo apt-get install -y iverilog verilator python3-pip
           python3 -m pip install --break-system-packages cocotb==1.9.2 pytest pillow
 
-      - name: Run Icarus Verilog simulation
+      - name: Run Icarus Verilog simulation (directed + random + coverage gate)
         run: make -C tb SIM=icarus
 
       - name: Run Verilator simulation with RTL coverage
@@ -27,6 +27,13 @@ jobs:
           make -C tb SIM=verilator VERILATOR_COVERAGE=1
           verilator_coverage --annotate coverage_report tb/coverage.dat
           verilator_coverage --rank tb/coverage.dat
+
+      - name: Extra random seeds (Icarus)
+        run: |
+          for seed in 2 3 4 5; do
+            rm -rf tb/sim_build tb/results.xml
+            NK_SEED=$seed NK_RAND_PROGRAMS=120 make -C tb SIM=icarus MODULE=test_nk_gpu_verif
+          done
 
       - name: Upload rendered shader frame and coverage report
         uses: actions/upload-artifact@v4

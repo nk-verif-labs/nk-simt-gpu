@@ -45,6 +45,18 @@ flowchart LR
 - `test_virtual_gpu_shader_render`: `32×32` RGB shader rendered on RTL and exported to `tb/nk_gpu_render.png` — **PASS**
 - Both Icarus Verilog 12.0 and Verilator 5.020 pass `2/2` (`10,244 ns`).
 
+### Golden-model & coverage-driven regression (`tb/test_nk_gpu_verif.py`)
+
+- **Golden model** (`tb/nk_gpu_model.py`): Python reference of the full ISA; after every launch the DUT's full DMEM, SETPX pixel stream and status word are compared against it.
+- **Directed tests:** ALU corner cases (carry, borrow, overflow), all 16 shift amounts, special registers R0/R1/R2, DMEM address wrap and same-address lane conflicts, SETPX protocol and RGB565→RGB888, NOP/undefined opcodes, host interface (busy lock-out, sticky done), reset mid-run.
+- **Constrained-random:** `NK_RAND_PROGRAMS` programs × 2 launches per seed (`NK_SEED`), with corner-biased operands and warp IDs.
+- **Functional coverage** (`tb/nk_gpu_cov.py`): 92 required bins (opcodes, registers, shift amounts, arithmetic corners, memory wrap/conflict, SETPX, warp-ID classes) — the regression fails if any bin is missed.
+- **Result:** `12/12` tests pass on Icarus and Verilator, `92/92` bins covered; 5 of 6 injected RTL bugs are caught (the sixth is an equivalent mutant).
+
+```bash
+NK_SEED=7 NK_RAND_PROGRAMS=200 make -C tb SIM=icarus MODULE=test_nk_gpu_verif
+```
+
 ## Quickstart
 
 ```bash
