@@ -10,6 +10,7 @@ from cocotb.triggers import RisingEdge, ClockCycles
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "driver")))
 from nk_gpu_asm import encode
 from nk_gpu_golden import NkGpuGoldenModel, expand_rgb565_to_888
+from nk_gpu_kernels import build_divergent_orb_shader, build_matvec4_kernel
 
 
 def save_png_rgb(filename: str, width: int, height: int, pixels: list[list[tuple[int, int, int]]]):
@@ -392,3 +393,69 @@ async def test_simt_hardware_loop_blt(dut):
     for i in range(4):
         got = await mmio_read(dut, 2, 10 + i)
         assert got == gm.dmem[10 + i] == expected[i], f"Lane {i}: got {got}, exp {expected[i]}"
+
+
+@cocotb.test()
+async def test_divergent_orb_shader_render(dut):
+    """Render a 32x32 divergent orb+ring+checkerboard shader and verify against golden model."""
+    cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
+    await reset_dut(dut)
+
+    W, H = 32, 32
+    fb = [[(0, 0, 0) for _ in range(W)] for _ in range(H)]
+    gm = NkGpuGoldenModel()
+    rtl_pixels = []
+
+    async def px_capture():
+        while True:
+            await RisingEdge(dut.clk)
+            if dut.px_valid.value:
+                x = int(dut.px_x.value)
+                y = int(dut.px_y.value)
+                rgb = int(dut.px_rgb.value)
+                rtl_pixels.append((x, y, rgb))
+                if 0 <= x < W and 0 <= y < H:
+                    fb[y][x] = ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF)
+
+    cocotb.start_soon(px_capture())
+
+    for y in range(H):
+        prog = build_divergent_orb_shader(y)
+        assert len(prog) <= 32
+        for pc, ins in enumerate(prog):
+            gm.imem[pc] = ins
+            await mmio_write(dut, 1, pc, ins)
+        for wid in range(W // 4):
+            gm.run_warp(wid)
+            await launch_warp(dut, wid)
+
+    out_png = os.path.join(os.path.dirname(__file__), "nk_gpu_divergent.png")
+    save_png_rgb(out_png, W, H, fb)
+    assert os.path.exists(out_png) and os.path.getsize(out_png) > 100
+    assert rtl_pixels == gm.pixels
+
+
+@cocotb.test()
+async def test_matvec4_hardware_loop(dut):
+    """Execute 4x4 matrix-vector multiply using an in-kernel BLT loop."""
+    cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
+    await reset_dut(dut)
+
+    rng = random.Random(42)
+    A = [rng.randint(1, 20) for _ in range(16)]
+    x = [rng.randint(1, 20) for _ in range(4)]
+    for i, val in enumerate(A):
+        await mmio_write(dut, 2, i, val)
+    for i, val in enumerate(x):
+        await mmio_write(dut, 2, 16 + i, val)
+
+    prog = build_matvec4_kernel()
+    for pc, ins in enumerate(prog):
+        await mmio_write(dut, 1, pc, ins)
+
+    await launch_warp(dut, 0)
+
+    for row in range(4):
+        exp = sum(A[row * 4 + k] * x[k] for k in range(4)) & 0xFFFF
+        got = await mmio_read(dut, 2, 20 + row)
+        assert got == exp, f"Row {row} mismatch: got {got}, exp {exp}"
